@@ -18,17 +18,20 @@ use std::time::{Duration, Instant};
 
 // Bring in some tools for using pairing-friendly curves
 // We're going to use the BLS12-377 pairing-friendly elliptic curve.
-use ark_bls12_377::{Bls12_377, Fr};
+// use ark_bls12_377::{Bls12_377, Fr};
+use ark_bn254::{Bn254, Fr};
 use ark_ff::Field;
 use ark_std::test_rng;
 
 // We'll use these interfaces to construct our circuit.
+use ark_groth16::utils::{read_from_file, write_to_file};
 use ark_relations::{
     lc, ns,
     r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, Variable},
 };
+use ark_groth16::{Proof, VerifyingKey};
 
-const MIMC_ROUNDS: usize = 322;
+const MIMC_ROUNDS: usize = 10;
 
 /// This is an implementation of MiMC, specifically a
 /// variant named `LongsightF322p3` for BLS12-377.
@@ -143,7 +146,7 @@ impl<'a, F: Field> ConstraintSynthesizer<F> for MiMCDemo<'a, F> {
 }
 
 #[test]
-fn test_mimc_groth16() {
+fn test_mimc_bn254_groth16() {
     // We're going to use the Groth16 proving system.
     use ark_groth16::Groth16;
 
@@ -164,66 +167,43 @@ fn test_mimc_groth16() {
             constants: &constants,
         };
 
-        Groth16::<Bls12_377>::setup(c, &mut rng).unwrap()
+        Groth16::<Bn254>::setup(c, &mut rng).unwrap()
     };
 
     // Prepare the verification key (for proof verification)
-    let pvk = Groth16::<Bls12_377>::process_vk(&vk).unwrap();
+    let pvk = Groth16::<Bn254>::process_vk(&vk).unwrap();
 
     println!("Creating proofs...");
 
-    // Let's benchmark stuff!
-    const SAMPLES: u32 = 50;
-    let mut total_proving = Duration::new(0, 0);
-    let mut total_verifying = Duration::new(0, 0);
+    // Generate a random preimage and compute the image
+    let xl = rng.gen();
+    let xr = rng.gen();
+    let image = mimc(xl, xr, &constants);
 
-    // Just a place to put the proof data, so we can
-    // benchmark deserialization.
-    // let mut proof_vec = vec![];
+    // proof_vec.truncate(0);
 
-    for _ in 0..SAMPLES {
-        // Generate a random preimage and compute the image
-        let xl = rng.gen();
-        let xr = rng.gen();
-        let image = mimc(xl, xr, &constants);
+    // Create an instance of our circuit (with the
+    // witness)
+    let c = MiMCDemo {
+        xl: Some(xl),
+        xr: Some(xr),
+        constants: &constants,
+    };
 
-        // proof_vec.truncate(0);
+    // Create a groth16 proof with our parameters.
+    let proof = Groth16::<Bn254>::prove(&pk, c, &mut rng).unwrap();
+    assert!(Groth16::<Bn254>::verify_with_processed_vk(&pvk, &[image.clone()], &proof).unwrap());
 
-        let start = Instant::now();
-        {
-            // Create an instance of our circuit (with the
-            // witness)
-            let c = MiMCDemo {
-                xl: Some(xl),
-                xr: Some(xr),
-                constants: &constants,
-            };
+    // dump data
+    write_to_file("mimc_bn254_groth16.vk", &vk);
+    write_to_file("mimc_bn254_groth16.proof", &proof);
+    write_to_file("mimc_bn254_groth16.pi", &image);
 
-            // Create a groth16 proof with our parameters.
-            let proof = Groth16::<Bls12_377>::prove(&pk, c, &mut rng).unwrap();
-            assert!(
-                Groth16::<Bls12_377>::verify_with_processed_vk(&pvk, &[image], &proof).unwrap()
-            );
-
-            // proof.write(&mut proof_vec).unwrap();
-        }
-
-        total_proving += start.elapsed();
-
-        let start = Instant::now();
-        // let proof = Proof::read(&proof_vec[..]).unwrap();
-        // Check the proof
-
-        total_verifying += start.elapsed();
-    }
-    let proving_avg = total_proving / SAMPLES;
-    let proving_avg =
-        proving_avg.subsec_nanos() as f64 / 1_000_000_000f64 + (proving_avg.as_secs() as f64);
-
-    let verifying_avg = total_verifying / SAMPLES;
-    let verifying_avg =
-        verifying_avg.subsec_nanos() as f64 / 1_000_000_000f64 + (verifying_avg.as_secs() as f64);
-
-    println!("Average proving time: {:?} seconds", proving_avg);
-    println!("Average verifying time: {:?} seconds", verifying_avg);
+    // load data and verifier it
+    println!("Verifying loading proof...");
+    let proof = read_from_file::<Proof<Bn254>>("mimc_bn254_groth16.proof");
+    let vk = read_from_file::<VerifyingKey<Bn254>>("mimc_bn254_groth16.vk");
+    let pi = read_from_file::<Fr>("mimc_bn254_groth16.pi");
+    let pvk = Groth16::<Bn254>::process_vk(&vk).unwrap();
+    assert!(Groth16::<Bn254>::verify_with_processed_vk(&pvk, &[pi], &proof).unwrap());
 }

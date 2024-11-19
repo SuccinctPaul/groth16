@@ -41,6 +41,8 @@ pub mod constraints;
 #[cfg(test)]
 mod test;
 
+pub mod utils;
+
 pub use self::data_structures::*;
 pub use self::{generator::*, prover::*, verifier::*};
 
